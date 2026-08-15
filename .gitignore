@@ -1,0 +1,12 @@
+# Bağımlılıklar
+node_modules/
+
+# Loglar
+npm-debug.log*
+*.log
+
+# Ortam / editör
+.env
+.DS_Store
+.vscode/
+.idea/

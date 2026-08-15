@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="tr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Parti Minigame</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div id="root">
+      <h1 class="title">🎉 Parti Minigame</h1>
+
+      <!-- Ana ekran: oda kur / katıl. Server state'ine bağlı değil (statik). -->
+      <section id="home" class="card">
+        <h2>Oda Kur veya Katıl</h2>
+        <label class="field">
+          Takma ad
+          <input id="nickname" maxlength="16" placeholder="adın" autocomplete="off" />
+        </label>
+        <div class="row">
+          <button id="createBtn" class="primary wide">Yeni Oda Kur</button>
+        </div>
+        <div class="divider">— veya —</div>
+        <div class="row">
+          <input id="roomCode" maxlength="4" placeholder="ODA KODU" autocomplete="off" />
+          <button id="joinBtn">Katıl</button>
+        </div>
+        <p id="homeError" class="error"></p>
+      </section>
+
+      <!-- Oyun ekranı: tamamen server state'inden çizilir. -->
+      <section id="game" class="card hidden"></section>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="client.js"></script>
+  </body>
+</html>
