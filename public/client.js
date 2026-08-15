@@ -368,6 +368,7 @@ function bindMinigame(id, view) {
 
 function render(state) {
   currentState = state; // klavye dinleyicisi güncel faz/minigame'i görsün
+  window.__roomState = state; // debug: konsoldan __roomState.characters ile kontrol edilebilir
   // Type Race: input'u yok etmemek için tam yeniden çizim yerine yerinde güncelle.
   if (state.phase === 'playing' && state.minigame && state.minigame.id === 'type-race' && typeRaceMounted) {
     updateTypeRace(state);
@@ -393,7 +394,7 @@ function renderLobby(state, amHost, me) {
     .map(
       (p) => `
     <li>
-      <span>${p.isHost ? '👑 ' : ''}${esc(p.nickname)}${p.connected ? '' : '<span class="off">(koptu)</span>'}</span>
+      <span>${avatarHTML(state, p.characterId, 'avatar-sm')}${p.isHost ? '👑 ' : ''}${esc(p.nickname)}${p.connected ? '' : '<span class="off">(koptu)</span>'}</span>
       <span class="${p.ready ? 'ready' : 'notready'}">${p.ready ? 'Hazır ✔' : 'Bekliyor'}</span>
     </li>`
     )
@@ -403,11 +404,51 @@ function renderLobby(state, amHost, me) {
       (n) => `<button class="roundBtn ${state.totalRounds === n ? 'sel' : ''}" data-rounds="${n}" ${amHost ? '' : 'disabled'}>${n}</button>`
     )
     .join('');
+
+  // Karakter seçim gridi. "taken" = başka BAĞLI oyuncunun seçtiği (kopan oyuncununki
+  // havuza döner). Kendi seçtiğim "sel" olur; başkasınınki soluk + tıklanamaz.
+  const takenBy = {};
+  state.players.forEach((p) => {
+    if (p.connected && p.characterId) takenBy[p.characterId] = p;
+  });
+  const myChar = me ? me.characterId : null;
+  const cells = (state.characters || [])
+    .map((c) => {
+      const owner = takenBy[c.id];
+      const mine = myChar === c.id;
+      const takenByOther = !!owner && (!me || owner.id !== me.id);
+      const cls = ['charCell'];
+      if (mine) cls.push('sel');
+      if (takenByOther) cls.push('taken');
+      const badge = takenByOther
+        ? `<span class="charTaken">${esc(owner.nickname)}</span>`
+        : mine
+        ? '<span class="charMine">SEÇİLİ ✔</span>'
+        : '<span class="charName">' + esc(c.name) + '</span>';
+      return `
+        <button class="${cls.join(' ')}" data-char="${c.id}" ${takenByOther ? 'disabled' : ''} title="${esc(c.name)}">
+          <img src="characters/${c.file}" alt="${esc(c.name)}" />
+          ${badge}
+        </button>`;
+    })
+    .join('');
+
+  // Katalog boşsa (ör. sunucu eski sürümde çalışıyorsa) grid yerine net uyarı bas.
+  const hasCatalog = Array.isArray(state.characters) && state.characters.length > 0;
+  const gridHtml = hasCatalog
+    ? `<div class="charGrid">${cells}</div>`
+    : `<p class="hint charhint">⚠ Karakter listesi sunucudan gelmedi. Sunucu büyük olasılıkla ESKİ sürümde çalışıyor — terminalde durdurup (Ctrl+C) <b>npm start</b> ile yeniden başlat.</p>`;
+
+  const canReady = !!(me && me.characterId);
+  const readyLabel = me && me.ready ? 'Hazır değilim' : 'Hazırım';
   return `
     <div class="rowbetween"><h2>Lobi</h2><span class="code">${state.code}</span></div>
     <p>Round sayısı: ${rounds} ${amHost ? '' : '<small style="color:var(--muted)">(sadece host seçer)</small>'}</p>
     <ul class="list">${players}</ul>
-    <button id="readyBtn" class="primary wide">${me && me.ready ? 'Hazır değilim' : 'Hazırım'}</button>
+    <h3>Karakterini seç</h3>
+    ${gridHtml}
+    <button id="readyBtn" class="primary wide" ${canReady ? '' : 'disabled'}>${readyLabel}</button>
+    ${canReady ? '' : '<p class="hint charhint">⚠ Önce bir karakter seç — sonra “Hazırım”.</p>'}
     <p class="hint">${state.waitingFor.length ? 'Bekleniyor: ' + state.waitingFor.map(esc).join(', ') : 'Herkes hazır! Başlıyor…'}</p>`;
 }
 
@@ -424,12 +465,12 @@ function renderRoundResult(state, me) {
   const r = state.lastRoundResult;
   const ranking = r.ranking
     .map(
-      (x, i) => `<li><span>${i + 1}. ${esc(x.nickname)}</span><span>skor ${x.rawScore} · +${x.points} puan</span></li>`
+      (x, i) => `<li><span>${i + 1}. ${avatarHTML(state, playerCharId(state, x.playerId), 'avatar-xs')}${esc(x.nickname)}</span><span>skor ${x.rawScore} · +${x.points} puan</span></li>`
     )
     .join('');
   const scoreboard = [...state.players]
     .sort((a, b) => b.totalScore - a.totalScore)
-    .map((p, i) => `<li><span>${i + 1}. ${esc(p.nickname)}${p.connected ? '' : '<span class="off">(koptu)</span>'}</span><span>${p.totalScore} puan</span></li>`)
+    .map((p, i) => `<li><span>${i + 1}. ${avatarHTML(state, p.characterId, 'avatar-xs')}${esc(p.nickname)}${p.connected ? '' : '<span class="off">(koptu)</span>'}</span><span>${p.totalScore} puan</span></li>`)
     .join('');
   const isLast = state.currentRound >= state.totalRounds;
   const label = me && me.roundReady ? 'Hazır değilim' : isLast ? 'Finali gör · Hazırım' : 'Sıradaki round · Hazırım';
@@ -445,7 +486,7 @@ function renderGameOver(state, amHost) {
   const scoreboard = [...state.players]
     .sort((a, b) => b.totalScore - a.totalScore)
     .map(
-      (p, i) => `<li class="${state.winners.includes(p.nickname) ? 'winner' : ''}"><span>${i + 1}. ${esc(p.nickname)}</span><span>${p.totalScore} puan</span></li>`
+      (p, i) => `<li class="${state.winners.includes(p.nickname) ? 'winner' : ''}"><span>${i + 1}. ${avatarHTML(state, p.characterId, 'avatar-xs')}${esc(p.nickname)}</span><span>${p.totalScore} puan</span></li>`
     )
     .join('');
   const win =
@@ -463,6 +504,13 @@ function bind(state, amHost) {
   if (state.phase === 'lobby') {
     const rb = $('#readyBtn');
     if (rb) rb.onclick = () => send('lobby:toggleReady');
+    // Karakter seçimi: kendi seçili karakterine tekrar basmak bırakır (server toggle).
+    document.querySelectorAll('.charCell').forEach((b) => {
+      b.onclick = () => {
+        if (b.disabled) return; // başkası almış
+        send('lobby:selectCharacter', { characterId: b.dataset.char });
+      };
+    });
     if (amHost)
       document.querySelectorAll('.roundBtn').forEach((b) => {
         b.onclick = () => send('lobby:setRounds', { rounds: Number(b.dataset.rounds) });
@@ -480,6 +528,24 @@ function bind(state, amHost) {
 
 function esc(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+// ---------------- karakter / avatar yardımcıları ----------------
+// Karakter kataloğu server:state.characters içinde gelir (id, name, file).
+function charFile(state, characterId) {
+  if (!characterId || !state.characters) return null;
+  const c = state.characters.find((x) => x.id === characterId);
+  return c ? c.file : null;
+}
+// Oyuncu adının yanında gösterilecek küçük avatar (seçilmemişse soluk '?').
+function avatarHTML(state, characterId, cls = '') {
+  const file = charFile(state, characterId);
+  if (!file) return `<span class="avatar avatar-empty ${cls}"></span>`;
+  return `<img class="avatar ${cls}" src="characters/${file}" alt="" />`;
+}
+function playerCharId(state, playerId) {
+  const p = state.players.find((x) => x.id === playerId);
+  return p ? p.characterId : null;
 }
 
 // ---------------- Type Race yardımcıları ----------------

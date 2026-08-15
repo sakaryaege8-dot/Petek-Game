@@ -58,6 +58,9 @@ io.on('connection', (socket) => {
   socket.on('lobby:setRounds', ({ rounds } = {}) =>
     withRoom((room, pid) => room.setRounds(pid, Number(rounds)))
   );
+  socket.on('lobby:selectCharacter', ({ characterId } = {}) =>
+    withRoom((room, pid) => room.selectCharacter(pid, characterId ?? null))
+  );
   socket.on('lobby:toggleReady', () => withRoom((room, pid) => room.setReady(pid)));
   socket.on('round:toggleReady', () => withRoom((room, pid) => room.setRoundReady(pid)));
   socket.on('game:input', (input) => withRoom((room, pid) => room.handleInput(pid, input)));

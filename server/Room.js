@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto';
 import { awardPoints } from './scoring.js';
 import { pickRandom } from './minigames/index.js';
+import { CHARACTERS, isValidCharacter } from './characters.js';
 
 // Solo test kolay olsun diye 1; gerçek oyunda 2+ önerilir.
 const MIN_PLAYERS = 1;
@@ -39,6 +40,7 @@ export default class Room {
       ready: false,
       roundReady: false,
       totalScore: 0,
+      characterId: null, // lobide seçilen avatar (null = seçilmedi)
       order: this._seq++,
     };
     if (isHost) this.hostId = id;
@@ -57,11 +59,26 @@ export default class Room {
   reconnect(player, socketId) {
     player.socketId = socketId;
     player.connected = true;
+    // Kopukken karakteri havuza dönmüştü; bu sırada başka BAĞLI oyuncu kaptıysa
+    // seçimi düşür (ve hazır durumunu da), yeniden seçmesi gerekir.
+    if (player.characterId && this._characterTaken(player.characterId, player.id)) {
+      player.characterId = null;
+      player.ready = false;
+    }
     const t = this._graceTimers.get(player.id);
     if (t) {
       clearTimeout(t);
       this._graceTimers.delete(player.id);
     }
+  }
+
+  // Bir karakter BAŞKA bir bağlı oyuncu tarafından kullanılıyor mu?
+  // (Kopan oyuncular sayılmaz -> karakter otomatik havuza döner.)
+  _characterTaken(characterId, exceptPlayerId) {
+    for (const o of this.players.values()) {
+      if (o.id !== exceptPlayerId && o.connected && o.characterId === characterId) return true;
+    }
+    return false;
   }
 
   connectedPlayers() {
@@ -134,9 +151,34 @@ export default class Room {
     if (this.phase !== 'lobby') return;
     const p = this.players.get(playerId);
     if (!p) return;
-    p.ready = ready === undefined ? !p.ready : !!ready;
+    const want = ready === undefined ? !p.ready : !!ready;
+    // SUNUCU TARAFI KURAL: karakter seçmeden "hazır" olunamaz (client engelini
+    // atlayıp sahte hazır göndermeyi de burada engelliyoruz).
+    if (want && !p.characterId) return;
+    p.ready = want;
     this.broadcast();
     this.checkReadyGates();
+  }
+
+  // Lobide karakter seç / değiştir / bırak. Aynı karakteri iki BAĞLI oyuncu alamaz.
+  // Kendi seçili karakterine tekrar tıklamak seçimi bırakır (toggle) ve hazırı düşürür.
+  selectCharacter(playerId, characterId) {
+    if (this.phase !== 'lobby') return;
+    const p = this.players.get(playerId);
+    if (!p) return;
+
+    // Bırakma: null ya da kendi seçili karakterine tekrar tıklama
+    if (characterId === null || characterId === p.characterId) {
+      p.characterId = null;
+      p.ready = false; // karaktersiz hazır olunamaz
+      this.broadcast();
+      return;
+    }
+
+    if (!isValidCharacter(characterId)) return;
+    if (this._characterTaken(characterId, playerId)) return; // başkası almış -> yok say
+    p.characterId = characterId;
+    this.broadcast();
   }
 
   setRoundReady(playerId, ready) {
@@ -280,6 +322,7 @@ export default class Room {
       totalRounds: this.totalRounds,
       currentRound: this.currentRound,
       hostId: this.hostId,
+      characters: CHARACTERS, // seçilebilir karakter kataloğu (id, name, file)
       players: this.orderedPlayers().map((p) => ({
         id: p.id,
         nickname: p.nickname,
@@ -288,6 +331,7 @@ export default class Room {
         ready: p.ready,
         roundReady: p.roundReady,
         totalScore: p.totalScore,
+        characterId: p.characterId,
       })),
       minigame:
         this.phase === 'playing' && this.currentMinigame
