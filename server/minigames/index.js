@@ -10,6 +10,7 @@ import UndercoverGame from './UndercoverGame.js';
 import PrecisionBarGame from './PrecisionBarGame.js';
 import RedButtonGame from './RedButtonGame.js';
 import TimeTargetGame from './TimeTargetGame.js';
+import RedLightGreenLightGame from './RedLightGreenLightGame.js';
 
 register(ArrowRushGame);
 register(ClickRushGame);
@@ -20,6 +21,7 @@ register(UndercoverGame);
 register(PrecisionBarGame);
 register(RedButtonGame);
 register(TimeTargetGame);
+register(RedLightGreenLightGame);
 // register(SonrakiOyun);   <- sonraki minigame'ler böyle eklenecek
 // ...
 

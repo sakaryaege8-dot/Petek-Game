@@ -20,6 +20,10 @@ let ttMounted = false; // Zaman Vurucu: shell mount edildi mi (in-place güncell
 let ttStructKey = ''; // Zaman Vurucu: ekran yapısı anahtarı (phase|pressed) — değişince remount
 let ttSync = null; // Zaman Vurucu: { atPerf } — lokal sayaç başlangıcı
 let ttRaf = null; // Zaman Vurucu: requestAnimationFrame id
+let rlglMounted = false; // Kırmızı Işık: shell mount edildi mi (in-place güncelleme)
+let rlglHolding = false; // Kırmızı Işık: yerel "basılı tutuyorum" durumu (tekrar göndermeyi engeller)
+let rlglWalkTimer = null; // Kırmızı Işık: yürüme animasyonu kare döngüsü
+let rlglWalkFrame = 0; // Kırmızı Işık: o anki yürüme karesi
 
 const $ = (sel) => document.querySelector(sel);
 const homeEl = $('#home');
@@ -140,8 +144,36 @@ gameEl.addEventListener('pointerdown', (e) => {
     // Hedef süreye ulaştığını düşününce bas (bir kez). Server basış anını ölçer.
     const you = s.minigame.view.you || {};
     if (!you.pressed && e.target.closest('#ttBtn')) send('game:input', { type: 'press' });
+  } else if (mgId === 'red-light-green-light') {
+    // İLERLE'ye BASILI TUT: pointerdown -> hold başlat (bırakma global pointerup'ta).
+    if (e.target.closest('#rlglGo')) { e.preventDefault(); rlglSetHold(true); }
   }
 });
+
+// Kırmızı Işık: basılı-tut kontrolü. Fare/dokunma her yerde bırakılınca dursun +
+// Boşluk/↑ tuşu da basılı tutmayı sağlasın. (Bir kez eklenir; currentState'e bakar.)
+function rlglSetHold(down) {
+  const s = currentState;
+  if (!s || s.phase !== 'playing' || !s.minigame || s.minigame.id !== 'red-light-green-light') {
+    rlglHolding = false;
+    return;
+  }
+  const me = s.minigame.view.players[myId];
+  if (!me || me.eliminated || me.finished || me.left) return;
+  if (down === rlglHolding) return; // durum değişmediyse tekrar gönderme
+  rlglHolding = down;
+  send('game:input', { type: 'hold', down });
+}
+document.addEventListener('pointerup', () => rlglSetHold(false));
+document.addEventListener('keydown', (e) => {
+  const s = currentState;
+  if (!s || s.phase !== 'playing' || !s.minigame || s.minigame.id !== 'red-light-green-light') return;
+  if (e.key === ' ' || e.code === 'Space' || e.key === 'ArrowUp') { e.preventDefault(); rlglSetHold(true); }
+});
+document.addEventListener('keyup', (e) => {
+  if (e.key === ' ' || e.code === 'Space' || e.key === 'ArrowUp') rlglSetHold(false);
+});
+window.addEventListener('blur', () => rlglSetHold(false));
 
 // Hassas Duruş: Boşluk tuşuyla da durdurulabilsin (ayrı dinleyici; ok-tuşu
 // dinleyicisine dokunmuyoruz).
@@ -566,7 +598,114 @@ const minigameRenderers = {
     }
     return hud + targetBox + `<div class="tt-arena">${body}</div>`;
   },
+
+  // Kırmızı Işık Yeşil Işık — yolda ilerleyen karakterler + büyük ışık. Shell mount'ta
+  // çizilir; ışık/konum/durum her broadcast'te updateRedLight ile yerinde güncellenir.
+  'red-light-green-light'(view, state) {
+    const lanes = state.players
+      .map((p) => {
+        const pv = view.players[p.id];
+        if (!pv) return '';
+        const file = charFile(state, p.characterId);
+        const staticSrc = file ? `characters/${file}` : '';
+        const img = file ? `<img src="${staticSrc}" alt="" />` : '<span class="rlgl-noimg">?</span>';
+        const mineStar = p.id === myId ? '★ ' : '';
+        return `<div class="rlgl-lane">
+          <div class="rlgl-runner" id="rlglR_${p.id}" data-cid="${p.characterId || ''}" data-static="${staticSrc}" style="left:${rlglLeft(pv.x)}">
+            ${img}<span class="rlgl-rname">${mineStar}${esc(p.nickname)}</span>
+          </div>
+        </div>`;
+      })
+      .join('');
+    return `
+      <div class="rowbetween ar-hud">
+        <span class="ar-timer" id="rlglTime">⏱ ${Math.ceil(view.timeLeftMs / 1000)}s</span>
+        <span class="ar-score" id="rlglAlive">🏃 ${view.activeCount}/${view.total}</span>
+      </div>
+      <div id="rlglLight" class="rlgl-light ${view.light}">${view.light === 'green' ? 'YEŞİL — GEÇ' : 'KIRMIZI — DUR'}</div>
+      <div class="rlgl-track"><div class="rlgl-finishline"></div>${lanes}</div>
+      <div id="rlglBanner" class="rlgl-banner hidden"></div>
+      <button id="rlglGo" class="primary wide rlgl-go">İLERLE — basılı tut</button>
+      <p class="hint">Yeşilde <b>İLERLE</b>'yi basılı tut (Boşluk / ↑ da olur), kırmızıda <b>hemen bırak</b>! Kırmızıda hareket eden <b>anında elenir</b>. Işık süreleri rastgele, uyarı yok. Önce bitiş çizgisine ulaşan en yüksek puanı alır.</p>`;
+  },
 };
+
+// Runner'ın yol üzerindeki sol konumu (2%..94% -> taşmasın, bitiş çizgisiyle hizalı).
+function rlglLeft(x) {
+  return (2 + Math.max(0, Math.min(1, x || 0)) * 92) + '%';
+}
+// Broadcast geldikçe (100ms) ışık/konum/durumları YERİNDE güncelle (shell'i çizmeden).
+function updateRedLight(state) {
+  const view = state.minigame.view;
+  setText('#rlglTime', `⏱ ${Math.ceil(view.timeLeftMs / 1000)}s`);
+  setText('#rlglAlive', `🏃 ${view.activeCount}/${view.total}`);
+  const light = document.getElementById('rlglLight');
+  if (light) {
+    light.className = `rlgl-light ${view.light}`;
+    light.textContent = view.light === 'green' ? 'YEŞİL — GEÇ' : 'KIRMIZI — DUR';
+  }
+  for (const id in view.players) {
+    const pv = view.players[id];
+    const runner = document.getElementById(`rlglR_${id}`);
+    if (!runner) continue;
+    runner.style.left = rlglLeft(pv.x);
+    runner.classList.toggle('walking', !!pv.moving);
+    runner.classList.toggle('elim', !!pv.eliminated);
+    runner.classList.toggle('done', !!pv.finished);
+    runner.classList.toggle('gone', !!pv.left);
+  }
+  const me = view.players[myId];
+  const banner = document.getElementById('rlglBanner');
+  if (banner) {
+    if (me && me.eliminated) { banner.className = 'rlgl-banner elim'; banner.textContent = '💀 ELENDİN — diğerlerini izliyorsun'; }
+    else if (me && me.finished) { banner.className = 'rlgl-banner done'; banner.textContent = '🏁 BİTİRDİN!'; }
+    else { banner.className = 'rlgl-banner hidden'; banner.textContent = ''; }
+  }
+  const go = document.getElementById('rlglGo');
+  if (go) {
+    go.disabled = !me || me.eliminated || me.finished || me.left;
+    go.classList.toggle('rlgl-red', view.light === 'red');
+  }
+}
+
+// ---- Kırmızı Işık: yürüme animasyonu (PixelLab kareleri) ----
+// characters/animations/<id>/walk_00..03.png (04 == 00, döngü için atlanır). Tüm 8
+// karakterde mevcut. moving=true olan runner'ın img'i bu kareler arasında döner;
+// durunca statik poza (data-static) döner. SADECE bu minigame'de kullanılır.
+const WALK_FRAMES = 4;
+const WALK_FPS = 8;
+const WALK_HAS = new Set(SELECT_ANIM_IDS); // seçim animasyonuyla aynı 8 karakter
+(function preloadWalkAnims() {
+  WALK_HAS.forEach((id) => {
+    for (let i = 0; i < WALK_FRAMES; i++) {
+      new Image().src = `characters/animations/${id}/walk_${String(i).padStart(2, '0')}.png`;
+    }
+  });
+})();
+function rlglStartWalk() {
+  rlglStopWalk();
+  rlglWalkTimer = setInterval(() => {
+    rlglWalkFrame = (rlglWalkFrame + 1) % WALK_FRAMES;
+    const view = currentState && currentState.minigame && currentState.minigame.view;
+    if (!view || !view.players) return;
+    document.querySelectorAll('#rlglTrack .rlgl-runner').forEach((r) => {
+      const img = r.querySelector('img');
+      if (!img) return;
+      const id = r.id.slice('rlglR_'.length);
+      const pv = view.players[id];
+      const cid = r.dataset.cid;
+      if (pv && pv.moving && cid && WALK_HAS.has(cid)) {
+        img.src = `characters/animations/${cid}/walk_${String(rlglWalkFrame).padStart(2, '0')}.png`;
+      } else if (r.dataset.static && img.getAttribute('src') !== r.dataset.static) {
+        img.src = r.dataset.static; // durunca statik poz (aynıysa dokunma -> titremesin)
+      }
+    });
+  }, 1000 / WALK_FPS);
+}
+function rlglStopWalk() {
+  if (rlglWalkTimer) { clearInterval(rlglWalkTimer); rlglWalkTimer = null; }
+  rlglWalkFrame = 0;
+}
 
 // ---- Kelime Casusu yardımcı çiziciler ----
 function ucRoleBig(view) {
@@ -706,6 +845,12 @@ function bindMinigame(id, view) {
     } else {
       stopTtRaf();
     }
+  } else if (id === 'red-light-green-light') {
+    // Shell mount edildi; bundan sonra broadcast'ler updateRedLight ile yerinde işlenir.
+    rlglMounted = true;
+    rlglHolding = false;
+    updateRedLight(currentState);
+    rlglStartWalk(); // yürüme kare döngüsü (moving olanlar için)
   }
 }
 // ======================================================================
@@ -756,6 +901,15 @@ function render(state) {
   if (!ttv) stopTimeTargetAnim();
   ttMounted = false;
 
+  // Kırmızı Işık Yeşil Işık: 100ms'de bir güncelleniyor; shell'i her seferinde yeniden
+  // çizmek yerine (karakterlerin kayması bozulmasın) mount edip yerinde güncelliyoruz.
+  const rlglActive = state.phase === 'playing' && state.minigame && state.minigame.id === 'red-light-green-light';
+  if (rlglActive && rlglMounted) {
+    updateRedLight(state);
+    return;
+  }
+  if (!rlglActive) { rlglMounted = false; rlglStopWalk(); }
+
   const me = state.players.find((p) => p.id === myId);
   const amHost = !!(me && me.isHost);
   let html = '';
@@ -768,17 +922,27 @@ function render(state) {
   gameEl.classList.remove('cr-screen-stop'); // stop kalıntısını temizle; gerekiyorsa bind tekrar ekler
   gameEl.innerHTML = html;
   bind(state, amHost);
+
+  // Lobide bir oyuncu karakter SEÇTİĞİNDE, o kartta seçim animasyonunu bir kez oynat
+  // (herkes görsün). state'i diff'leyip yeni seçimleri yakalıyoruz.
+  if (state.phase === 'lobby') handleLobbySelectAnims(state);
+  else lobbyCharSnapshot = null; // lobiden çıktık; baz durumu sıfırla
 }
 
 function renderLobby(state, amHost, me) {
+  // Oyuncu KARTLARI: isim üstte (başlık), büyük karakter görseli ortada, host tacı
+  // + Hazır/Bekliyor durumu net biçimde. Yatay büyük kartlar (dar ekranda sarar).
   const players = state.players
-    .map(
-      (p) => `
-    <li>
-      <span>${avatarHTML(state, p.characterId, 'avatar-sm')}${p.isHost ? '👑 ' : ''}${esc(p.nickname)}${p.connected ? '' : '<span class="off">(koptu)</span>'}</span>
-      <span class="${p.ready ? 'ready' : 'notready'}">${p.ready ? 'Hazır ✔' : 'Bekliyor'}</span>
-    </li>`
-    )
+    .map((p) => {
+      const status = !p.connected ? '(koptu)' : p.ready ? 'Hazır ✔' : 'Bekliyor…';
+      const cardCls = !p.connected ? 'pcOff' : p.ready ? 'pcReady' : 'pcWaiting';
+      return `
+    <div class="playerCard ${cardCls}" data-pid="${p.id}">
+      <div class="pcName">${p.isHost ? '<span class="pcCrown">👑</span> ' : ''}${esc(p.nickname)}</div>
+      ${avatarHTML(state, p.characterId, 'avatar-pc')}
+      <div class="pcStatus">${status}</div>
+    </div>`;
+    })
     .join('');
   const rounds = [3, 5, 7]
     .map(
@@ -841,16 +1005,25 @@ function renderLobby(state, amHost, me) {
   const canReady = !!(me && me.characterId);
   const readyLabel = me && me.ready ? 'Hazır değilim' : 'Hazırım';
   return `
-    <div class="rowbetween"><h2>Lobi</h2><span class="code">${state.code}</span></div>
-    <p>Round sayısı: ${rounds} ${amHost ? '' : '<small style="color:var(--muted)">(sadece host seçer)</small>'}</p>
-    <ul class="list">${players}</ul>
-    <h3>Oyun havuzu</h3>
-    ${mgHtml}
-    <h3>Karakterini seç</h3>
+    <div class="rowbetween lobbyHead"><h2>Lobi</h2><span class="code">${state.code}</span></div>
+    <div class="playerCards">${players}</div>
+
+    <h3 class="charHeading">🎭 Karakterini seç</h3>
     ${gridHtml}
     <button id="readyBtn" class="primary wide" ${canReady ? '' : 'disabled'}>${readyLabel}</button>
     ${canReady ? '' : '<p class="hint charhint">⚠ Önce bir karakter seç — sonra “Hazırım”.</p>'}
-    <p class="hint">${state.waitingFor.length ? 'Bekleniyor: ' + state.waitingFor.map(esc).join(', ') : 'Herkes hazır! Başlıyor…'}</p>`;
+    <p class="hint">${state.waitingFor.length ? 'Bekleniyor: ' + state.waitingFor.map(esc).join(', ') : 'Herkes hazır! Başlıyor…'}</p>
+
+    <div class="lobbySettings">
+      <div class="lobbySetRow">
+        <span class="lobbySetLabel">Round sayısı${amHost ? '' : ' · host seçer'}</span>
+        <span class="roundBtns">${rounds}</span>
+      </div>
+      <div class="lobbySetBlock">
+        <span class="lobbySetLabel">Oyun havuzu${amHost ? '' : ' · host seçer'}</span>
+        ${mgHtml}
+      </div>
+    </div>`;
 }
 
 function renderPlaying(state) {
@@ -955,6 +1128,86 @@ function avatarHTML(state, characterId, cls = '') {
 function playerCharId(state, playerId) {
   const p = state.players.find((x) => x.id === playerId);
   return p ? p.characterId : null;
+}
+
+// ---------------- Lobi karakter SEÇİM animasyonu ----------------
+// Kareler PixelLab ile üretildi (TÜM 8 karaktere aynı "zıpla + el kaldır" aksiyonu).
+// Her karakterin klasörü: characters/animations/<id>/frame_00..12.png (00 ve 12 = rest
+// duruşu, first=last sabitlendiği için başladığı poza döner -> kesintisiz).
+const SELECT_ANIM_IDS = [
+  'petek', 'tuvalet', 'lamba', 'camasir-makinesi', 'duvar-saati', 'musluk', 'priz', 'cop-kutusu',
+];
+const SELECT_ANIMS = {};
+SELECT_ANIM_IDS.forEach((id) => {
+  SELECT_ANIMS[id] = { dir: `characters/animations/${id}`, frames: 13, fps: 20 };
+});
+let lobbyCharSnapshot = null;        // playerId -> characterId (bir önceki lobi render'ı)
+const activeSelectAnims = {};        // playerId -> { timer, overlay }
+
+function frameSrc(anim, i) {
+  return `${anim.dir}/frame_${String(i).padStart(2, '0')}.png`;
+}
+// Kareleri önden yükle (seçim anında takılmasın/titremesin).
+(function preloadSelectAnims() {
+  for (const id in SELECT_ANIMS) {
+    const a = SELECT_ANIMS[id];
+    for (let i = 0; i < a.frames; i++) new Image().src = frameSrc(a, i);
+  }
+})();
+
+// Lobi render'ları arasında karakter seçimlerini diff'le; YENİ bir seçim (null/başka
+// -> yeni karakter) olan her oyuncunun kartında animasyonu tetikle. İlk lobi render'ı
+// (snapshot yok) sadece baz alınır — mevcut seçimler için animasyon oynatılmaz.
+function handleLobbySelectAnims(state) {
+  const prev = lobbyCharSnapshot;
+  const next = {};
+  for (const p of state.players) next[p.id] = p.characterId || null;
+  if (prev) {
+    for (const p of state.players) {
+      const before = prev[p.id]; // yeni katılan oyuncuda undefined
+      const after = next[p.id];
+      if (after && before !== undefined && after !== before) triggerSelectAnim(p.id, after);
+    }
+  }
+  lobbyCharSnapshot = next;
+}
+
+// Kartın avatarı üzerinde animasyonu bir kez oynat. Overlay body'ye eklenir (lobi
+// yeniden çizilse bile animasyon bozulmaz); karesi bitince kendini kaldırır ve kart
+// yine statik rest duruşunu gösterir (frame_00 == son kare == rest, kesintisiz).
+function triggerSelectAnim(playerId, charId) {
+  const anim = SELECT_ANIMS[charId];
+  if (!anim) return;
+  const card = document.querySelector(`.playerCard[data-pid="${playerId}"]`);
+  const avatar = card && card.querySelector('.avatar-pc');
+  if (!avatar) return;
+  const rect = avatar.getBoundingClientRect();
+  if (!rect.width) return;
+  cancelSelectAnim(playerId); // aynı oyuncuda önceki animasyon varsa iptal et
+
+  const overlay = document.createElement('img');
+  overlay.className = 'select-anim';
+  overlay.style.left = rect.left + 'px';
+  overlay.style.top = rect.top + 'px';
+  overlay.style.width = rect.width + 'px';
+  overlay.style.height = rect.height + 'px';
+  overlay.src = frameSrc(anim, 0);
+  document.body.appendChild(overlay);
+
+  let i = 0;
+  const timer = setInterval(() => {
+    i += 1;
+    if (i >= anim.frames) return cancelSelectAnim(playerId);
+    overlay.src = frameSrc(anim, i);
+  }, 1000 / anim.fps);
+  activeSelectAnims[playerId] = { timer, overlay };
+}
+function cancelSelectAnim(playerId) {
+  const a = activeSelectAnims[playerId];
+  if (!a) return;
+  clearInterval(a.timer);
+  if (a.overlay && a.overlay.parentNode) a.overlay.parentNode.removeChild(a.overlay);
+  delete activeSelectAnims[playerId];
 }
 
 // ---------------- Type Race yardımcıları ----------------

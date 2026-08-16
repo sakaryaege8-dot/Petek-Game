@@ -100,7 +100,7 @@ button.primary:hover { background: var(--primary2); }
 .notready { color: var(--muted); font-size: 13px; }
 .off { color: var(--off); font-size: 12px; margin-left: 6px; }
 
-.roundBtn { margin-right: 6px; min-width: 44px; }
+.roundBtn { min-width: 38px; padding: 8px 12px; font-size: 13px; }
 .roundBtn.sel { background: var(--primary); }
 
 .bigwin { text-align: center; font-size: 22px; font-weight: 800; margin: 16px 0; }
@@ -340,72 +340,172 @@ button.primary:hover { background: var(--primary2); }
 .avatar-xs { width: 24px; height: 24px; margin-right: 6px; }
 .avatar-empty { display: inline-block; border: 1px dashed #34374d; background: transparent; }
 
-/* ---- Lobi karakter seçim gridi ---- */
+/* ---- Lobi hiyerarşisi: KARAKTERLER öne çıkar, ayarlar geride durur ---- */
+/* Prominent karakter başlığı (muted h3 stilini ezer) */
+.charHeading {
+  font-size: 19px;
+  color: var(--fg);
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 800;
+  margin: 14px 0 8px;
+}
+
+/* Karakter seçim kartları (orta boy — büyütülmüştü, biraz küçültüldü) */
 .charGrid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 8px;
-  margin: 8px 0 14px;
+  grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));
+  gap: 10px;
+  margin: 8px 0 16px;
 }
 .charCell {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 4px;
-  padding: 8px 4px 6px;
+  gap: 6px;
+  padding: 11px 8px 9px;
   background: var(--card2);
   border: 2px solid transparent;
   border-radius: 12px;
   cursor: pointer;
+  transition: transform .06s ease, border-color .15s ease, background .15s ease;
 }
+.charCell:hover:not(.taken) { transform: translateY(-2px); background: #2a2d44; }
 .charCell img {
-  width: 56px;
-  height: 56px;
+  width: 100%;
+  max-width: 92px;
+  height: auto;
+  aspect-ratio: 1 / 1;
   image-rendering: pixelated;
 }
-.charCell .charName { font-size: 11px; color: var(--muted); line-height: 1.1; text-align: center; }
-.charCell.sel { border-color: var(--primary); background: #2b2750; }
-.charCell.sel .charMine { font-size: 11px; font-weight: 800; color: var(--primary2); }
+.charCell .charName { font-size: 13px; font-weight: 700; color: var(--fg); line-height: 1.15; text-align: center; }
+.charCell.sel {
+  border-color: var(--primary);
+  background: #2b2750;
+  box-shadow: 0 0 0 1px var(--primary), 0 6px 16px rgba(108, 92, 231, 0.3);
+}
+.charCell.sel .charMine { font-size: 12px; font-weight: 800; color: var(--primary2); }
 .charCell.taken {
-  opacity: 0.4;
+  opacity: 0.42;
   cursor: not-allowed;
   filter: grayscale(0.8);
 }
-.charCell.taken .charTaken { font-size: 10px; color: var(--off); font-weight: 700; line-height: 1.1; text-align: center; }
+.charCell.taken .charTaken { font-size: 11px; color: var(--off); font-weight: 700; line-height: 1.15; text-align: center; }
 .charhint { color: var(--warn); font-weight: 600; }
+
+/* ---- Lobi OYUNCU KARTLARI (en üst, lobinin görsel odağı) ---- */
+.playerCards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 10px;
+  margin: 12px 0 20px;
+  padding: 0;
+  list-style: none;
+}
+.playerCard {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 8px 10px;
+  background: var(--card2);
+  border: 2px solid #2b2e40;
+  border-radius: 14px;
+}
+.pcName {
+  font-size: 15px;
+  font-weight: 800;
+  text-align: center;
+  line-height: 1.15;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+.pcCrown { filter: drop-shadow(0 0 4px rgba(241, 196, 15, 0.6)); }
+.avatar.avatar-pc {
+  display: block;
+  width: 100%;
+  max-width: 116px;
+  height: auto;
+  aspect-ratio: 1 / 1;
+  border-radius: 12px;
+}
+.avatar-empty.avatar-pc {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px dashed #34374d;
+}
+.avatar-empty.avatar-pc::after { content: '?'; font-size: 34px; font-weight: 800; color: #34374d; }
+.pcStatus { font-size: 13px; font-weight: 700; }
+.pcReady { border-color: var(--ok); background: #17241c; }
+.pcReady .pcStatus { color: var(--ok); }
+.pcWaiting .pcStatus { color: var(--muted); }
+.pcOff { opacity: 0.5; }
+.pcOff .pcStatus { color: var(--off); }
+
+/* Karakter seçim animasyonu overlay'i (kartın avatarı üzerine, bir kez oynar).
+   Avatar arka planıyla (#14151f) aynı zemin -> alttaki statik avatarı tam gizler. */
+.select-anim {
+  position: fixed;
+  z-index: 9998;
+  pointer-events: none;
+  image-rendering: pixelated;
+  background: #14151f;
+  border-radius: 12px;
+  object-fit: contain;
+}
+
+/* Lobi ayarları (round + oyun havuzu): görsel olarak karakterlerin GERİSİNDE */
+.lobbySettings {
+  margin-top: 20px;
+  padding-top: 14px;
+  border-top: 1px solid #2b2e40;
+  opacity: 0.82;
+}
+.lobbySetRow { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 6px 0 12px; }
+.lobbySetBlock { margin: 6px 0; }
+.lobbySetLabel {
+  font-size: 12px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  font-weight: 600;
+}
+.roundBtns { display: inline-flex; gap: 6px; }
 
 /* ---- Lobi oyun havuzu seçimi ---- */
 .mgGrid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 8px;
-  margin: 8px 0 6px;
+  gap: 6px;
+  margin: 6px 0 6px;
 }
 .mgCell {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 7px;
   justify-content: flex-start;
   text-align: left;
-  padding: 12px;
+  padding: 8px 10px;
   background: var(--card2);
   border: 2px solid transparent;
-  border-radius: 10px;
+  border-radius: 9px;
 }
 .mgCell .mgCheck {
-  width: 22px;
-  height: 22px;
-  flex: 0 0 22px;
-  border-radius: 6px;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  border-radius: 5px;
   border: 2px solid #4a4d66;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 13px;
+  font-size: 11px;
   font-weight: 900;
   color: #12131a;
 }
-.mgCell .mgName { font-size: 14px; font-weight: 600; }
+.mgCell .mgName { font-size: 12.5px; font-weight: 600; color: var(--muted); }
+.mgCell.on .mgName { color: var(--fg); }
 .mgCell.on { border-color: var(--primary); background: #2b2750; }
 .mgCell.on .mgCheck { background: var(--ok); border-color: var(--ok); }
 .mgCell.off { opacity: 0.6; }
@@ -574,6 +674,76 @@ button.primary:hover { background: var(--primary2); }
 .tt-fb-diff { font-size: 16px; color: var(--muted); margin-top: 6px; }
 .tt-fb-diff b { color: var(--fg); }
 .tt-fb-pts { font-size: 26px; font-weight: 900; color: var(--ok); margin-top: 8px; }
+
+/* ---- Kırmızı Işık Yeşil Işık ---- */
+.rlgl-light {
+  text-align: center;
+  font-size: 26px;
+  font-weight: 900;
+  letter-spacing: 1px;
+  padding: 16px;
+  border-radius: 12px;
+  margin: 8px 0 12px;
+  transition: background .04s, color .04s, box-shadow .04s;
+}
+.rlgl-light.green {
+  background: #16311f;
+  color: #35e08a;
+  box-shadow: inset 0 0 0 2px #2ecc71, 0 0 24px rgba(46, 204, 113, 0.4);
+}
+.rlgl-light.red {
+  background: #3a1518;
+  color: #ff6b6b;
+  box-shadow: inset 0 0 0 2px #e74c3c, 0 0 26px rgba(231, 76, 60, 0.55);
+}
+.rlgl-track {
+  position: relative;
+  background: #14151f;
+  border: 1px solid #34374d;
+  border-radius: 12px;
+  padding: 8px 4px;
+  margin-bottom: 12px;
+  overflow: hidden;
+}
+.rlgl-finishline {
+  position: absolute;
+  top: 6px;
+  bottom: 6px;
+  left: 94%;
+  width: 0;
+  border-left: 3px dashed var(--warn);
+  z-index: 0;
+}
+.rlgl-lane { position: relative; height: 48px; }
+.rlgl-runner {
+  position: absolute;
+  bottom: 3px;
+  left: 2%;
+  transform: translateX(-50%);
+  transition: left .12s linear; /* broadcast'lar arası yumuşak kayma */
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 46px;
+  z-index: 1;
+}
+.rlgl-runner img { width: 40px; height: 40px; image-rendering: pixelated; }
+.rlgl-runner .rlgl-noimg { font-size: 28px; }
+.rlgl-rname { font-size: 9px; color: var(--muted); white-space: nowrap; max-width: 70px; overflow: hidden; text-overflow: ellipsis; }
+/* Yürüme, gerçek PixelLab kareleriyle (img.src döngüsü) yapılıyor; kafa/gövde sabit
+   kalsın diye CSS transform bob'u YOK. */
+.rlgl-runner.elim { opacity: 0.5; filter: grayscale(1); }
+.rlgl-runner.elim img { transform: rotate(82deg); } /* yere düşmüş */
+.rlgl-runner.done { filter: drop-shadow(0 0 6px var(--warn)); }
+.rlgl-runner.gone { opacity: 0.35; }
+
+.rlgl-banner { text-align: center; font-weight: 800; font-size: 18px; padding: 10px; border-radius: 10px; margin-bottom: 10px; }
+.rlgl-banner.elim { background: rgba(231, 76, 60, 0.14); color: var(--off); border: 1px solid rgba(231, 76, 60, 0.4); }
+.rlgl-banner.done { background: rgba(46, 204, 113, 0.14); color: var(--ok); border: 1px solid rgba(46, 204, 113, 0.4); }
+
+.rlgl-go { font-size: 18px; padding: 18px; user-select: none; touch-action: none; }
+.rlgl-go.rlgl-red { background: #b32a34; }
+.rlgl-go.rlgl-red:hover { background: #b32a34; }
 
 /* senkron patlama efekti (body üzerinde, redraw'dan bağımsız) */
 .rb-boom {
