@@ -10,6 +10,16 @@ let arrowRushLastSeq = -1; // Ok Tuşu Yarışı: son gösterilen input sırası
 let clickRushLastSeq = -1; // Tık Yarışı: son gösterilen input sırası (flash için)
 let typeRaceMounted = false; // Type Race: shell çizildi mi (input'u korumak için yerinde güncelleme)
 let typeRaceValue = ''; // Type Race: o an yazılan metin (yeniden çizimlerde kaynak-doğru)
+let undercoverMounted = false; // Kelime Casusu: kendi sıramdaki metin input'u korumak için
+let pbMounted = false; // Hassas Duruş: bar shell'i mount edildi mi (in-place güncelleme)
+let pbSync = null; // Hassas Duruş: { elapsedMs, atPerf } — çizgi animasyon senkronu
+let pbRaf = null; // Hassas Duruş: requestAnimationFrame id
+let pbShownAttempts = -1; // Hassas Duruş: floating "+puan" tetikleyicisi
+let rbExplodedShown = false; // Kırmızı Buton: patlama efekti bir kez tetiklensin
+let ttMounted = false; // Zaman Vurucu: shell mount edildi mi (in-place güncelleme)
+let ttStructKey = ''; // Zaman Vurucu: ekran yapısı anahtarı (phase|pressed) — değişince remount
+let ttSync = null; // Zaman Vurucu: { atPerf } — lokal sayaç başlangıcı
+let ttRaf = null; // Zaman Vurucu: requestAnimationFrame id
 
 const $ = (sel) => document.querySelector(sel);
 const homeEl = $('#home');
@@ -113,6 +123,34 @@ gameEl.addEventListener('pointerdown', (e) => {
     if (!me || !me.alive || view.phase !== 'input' || me.status !== 'entering') return;
     const btn = e.target.closest('.sim-btn');
     if (btn) send('game:input', { index: Number(btn.dataset.color) });
+  } else if (mgId === 'undercover') {
+    // Oylama: portre/isim kartına basınca oyu yolla (pointerdown = yeniden-çizim
+    // araya girse bile tık kaçmaz; server ayrıca doğrular).
+    if (s.minigame.view.phase !== 'voting') return;
+    const cell = e.target.closest('.uc-vote');
+    if (cell && !cell.disabled) send('game:input', { type: 'vote', targetId: cell.dataset.pid });
+  } else if (mgId === 'precision-bar') {
+    // Bara ya da DURDUR'a basınca çizgiyi durdur (server o anki gerçek pozisyonu hesaplar).
+    if (e.target.closest('#pbArena') || e.target.closest('#pbStop')) send('game:input', { type: 'stop' });
+  } else if (mgId === 'red-button') {
+    // Kırmızı butona bas (bir kez). Server basış anını kendi saatiyle ölçer.
+    const you = s.minigame.view.you || {};
+    if (!you.pressed && e.target.closest('#rbBtn')) send('game:input', { type: 'press' });
+  } else if (mgId === 'time-target') {
+    // Hedef süreye ulaştığını düşününce bas (bir kez). Server basış anını ölçer.
+    const you = s.minigame.view.you || {};
+    if (!you.pressed && e.target.closest('#ttBtn')) send('game:input', { type: 'press' });
+  }
+});
+
+// Hassas Duruş: Boşluk tuşuyla da durdurulabilsin (ayrı dinleyici; ok-tuşu
+// dinleyicisine dokunmuyoruz).
+document.addEventListener('keydown', (e) => {
+  const s = currentState;
+  if (!s || s.phase !== 'playing' || !s.minigame || s.minigame.id !== 'precision-bar') return;
+  if (e.key === ' ' || e.code === 'Space') {
+    e.preventDefault();
+    send('game:input', { type: 'stop' });
   }
 });
 
@@ -313,7 +351,264 @@ const minigameRenderers = {
       <ul class="list sim-roster">${roster}</ul>
       <p class="hint">Server sequence'i herkese aynı anda gösterir. İzle, sonra 5 sn içinde aynı sırayla bas. Bir yanlış = elenirsin. En uzun dayanan kazanır.</p>`;
   },
+
+  // Kelime Casusu — çok ekranlı: tooFew / reveal / clue / voting / result.
+  // view.you sadece BU oyuncunun soketine gelir (rol/kelime sızmaz).
+  undercover(view, state) {
+    if (view.phase === 'tooFew') {
+      return `<div class="uc-role uc-spectator">Kelime Casusu için en az <b>${view.minPlayers}</b> oyuncu gerekli.
+        <br><small>Bu round atlanıyor — herkes eşit puan alıyor.</small></div>`;
+    }
+    if (view.phase === 'reveal') {
+      return `
+        ${ucRoleBig(view)}
+        <p class="uc-info">Rolünü aklında tut… Birazdan sıra başlıyor. Amaç: casus konuşmalardan kelimeyi çözemesin; sivilseniz casusu bulun.</p>
+        <h3>Oyuncular</h3>${ucPlayerList(view, state)}`;
+    }
+    if (view.phase === 'clue') {
+      const secs = Math.ceil((view.turnTimeLeftMs || 0) / 1000);
+      const myTurn = view.you && view.you.isYourTurn;
+      let panel;
+      if (myTurn) {
+        panel = `
+          <div class="uc-turn me">
+            <div class="uc-turn-label">⌨ SIRA SENDE — <b id="ucTimer">⏱ ${secs}s</b></div>
+            <input id="ucInput" class="uc-input" maxlength="24" autocomplete="off" autocorrect="off"
+                   autocapitalize="off" spellcheck="false" placeholder="temayla ilgili TEK kelime…" />
+            <button id="ucSubmit" class="primary wide">Gönder</button>
+            <div id="ucNotice" class="uc-notice">${view.you.notice ? esc(view.you.notice) : ''}</div>
+          </div>`;
+      } else {
+        const who = view.currentTurn ? esc(view.currentTurn.nickname) : '—';
+        panel = `<div class="uc-turn"><div class="uc-turn-label"><b>${who}</b> düşünüyor… <span id="ucTimer">⏱ ${secs}s</span></div></div>`;
+      }
+      return `
+        ${ucRoleHint(view)}
+        <div class="rowbetween ar-hud"><span class="ar-timer">Tur ${view.lap}/${view.lapsTotal}</span>
+          <span class="ar-score">🕵️ birimiz casus…</span></div>
+        ${panel}
+        <h3>Şu ana kadar söylenenler</h3>${ucBoard(view, state)}`;
+    }
+    if (view.phase === 'voting') {
+      const secs = Math.ceil((view.voteTimeLeftMs || 0) / 1000);
+      const myVote = view.you ? view.you.myVote : null;
+      const voted = new Set(view.votedIds || []);
+      const alive = view.players.filter((p) => !p.left).length;
+      const cells = view.players
+        .map((p) => {
+          const isSelf = p.id === myId;
+          const disabled = isSelf || p.left;
+          const sel = myVote === p.id ? ' sel' : '';
+          const mark = voted.has(p.id) ? '<span class="uc-voted">oy verdi ✔</span>' : '';
+          const tag = isSelf ? ' <small>(sen)</small>' : p.left ? ' <small class="off">(koptu)</small>' : '';
+          return `
+            <button class="uc-vote${sel}" data-pid="${p.id}" ${disabled ? 'disabled' : ''}>
+              ${avatarHTML(state, playerCharId(state, p.id), 'avatar-sm')}
+              <span class="uc-vname">${esc(p.nickname)}${tag}</span>
+              ${mark}
+            </button>`;
+        })
+        .join('');
+      return `
+        ${ucRoleHint(view)}
+        <div class="rowbetween ar-hud"><span class="ar-timer">🗳️ Oylama — ⏱ ${secs}s</span>
+          <span class="ar-score">${(view.votedIds || []).length}/${alive} oy</span></div>
+        <p class="uc-info">Sence casus kim? Portreye bas. (Kendine oy veremezsin — fikrini değiştirebilirsin.)</p>
+        <div class="uc-vote-grid">${cells}</div>
+        <h3>Söylenenler</h3>${ucBoard(view, state)}`;
+    }
+    if (view.phase === 'result') {
+      const r = view.result;
+      const caught = r.spyCaught;
+      const nameOf = (id) => {
+        const p = view.players.find((x) => x.id === id);
+        return p ? esc(p.nickname) : '—';
+      };
+      const voteRows = view.players
+        .map((p) => {
+          const target = r.votes[p.id];
+          const isSpy = p.id === r.spyId;
+          const accused = r.accusedIds.includes(p.id);
+          const right = target ? '→ ' + nameOf(target) : p.left ? '(koptu)' : 'oy yok';
+          return `<li class="${accused ? 'uc-accused' : ''}">
+            <span>${avatarHTML(state, playerCharId(state, p.id), 'avatar-xs')}${esc(p.nickname)}${isSpy ? ' 🕵️' : ''}</span>
+            <span>${right} · <b>${r.tally[p.id] || 0}</b> oy</span>
+          </li>`;
+        })
+        .join('');
+      const win = r.winnerNames.length ? r.winnerNames.map(esc).join(', ') : '—';
+      return `
+        <div class="uc-result ${caught ? 'uc-caught' : 'uc-escaped'}">
+          <div class="uc-result-big">${caught ? '✅ CASUS YAKALANDI' : '🕵️ CASUS SIYRILDI'}</div>
+          <div class="uc-reveal">Casus: <b>${esc(r.spyNickname)}</b></div>
+          <div class="uc-reveal">Gizli kelime: <b>${esc(r.secret)}</b></div>
+          <div class="uc-reveal">Kazanan${r.winnerNames.length > 1 ? 'lar' : ''}: <b>${win}</b></div>
+          <div class="uc-reason">${esc(r.reason)}</div>
+        </div>
+        <h3>Kim kime oy verdi</h3><ul class="list">${voteRows}</ul>`;
+    }
+    return '';
+  },
+
+  // Hassas Duruş — bar + hareketli çizgi. Bar bölmeleri statik (view.segments).
+  // Çizgiyi rAF döngüsü oynatır (mount'ta başlar); HUD yerinde güncellenir.
+  'precision-bar'(view) {
+    const me = view.players[myId];
+    const secs = Math.ceil(view.timeLeftMs / 1000);
+    if (!me) return `<p class="hint">İzleyici modu — ⏱ ${secs}s</p>`;
+    const segs = view.segments
+      .map(
+        (sg) =>
+          `<div class="pb-seg pb-tier${sg.tier}" style="left:${sg.startPct}%;width:${sg.widthPct}%;background:${sg.color}"><span class="pb-seg-pts">${sg.points}</span></div>`
+      )
+      .join('');
+    return `
+      <div class="rowbetween ar-hud">
+        <span class="ar-timer" id="pbTimer">⏱ ${secs}s</span>
+        <span class="ar-score">Skor: <b id="pbScore">${me.score}</b></span>
+        <span class="pb-attempts">Deneme: <b id="pbAttempts">${me.attempts}</b></span>
+      </div>
+      <div id="pbArena" class="pb-arena">
+        <div class="pb-bar">${segs}</div>
+        <div id="pbLine" class="pb-line"></div>
+        <div id="pbFloat" class="pb-float"></div>
+      </div>
+      <button id="pbStop" class="primary wide pb-stop">DURDUR</button>
+      <p class="hint">Çizgi gidip gelirken <b>DURDUR</b>'a bas (bara tıkla / Boşluk tuşu da olur). Merkeze ne kadar yakınsan o kadar çok puan — merkez <b>5</b>! Her denemenin hızı farklı; 30 sn boyunca elinden geldiğince çok dene.</p>`;
+  },
+
+  // Kırmızı Buton — senkron nerve oyunu. Patlama efekti bindMinigame'de tetiklenir.
+  'red-button'(view) {
+    const secs = Math.ceil(view.timeLeftMs / 1000);
+    const you = view.you || {};
+    const hud = `
+      <div class="rowbetween ar-hud">
+        <span class="ar-timer">⏱ ${secs}s</span>
+        <span class="ar-score">${view.pressedCount}/${view.total} bastı</span>
+      </div>`;
+    let center;
+    if (you.pressed) {
+      const t = you.pressSec != null ? you.pressSec.toFixed(1) : '?';
+      if (you.late) {
+        center = `
+          <button class="rb-btn rb-used rb-late" disabled>
+            <span class="rb-main">ÇOK GEÇ</span>
+            <span class="rb-sub">${t} sn · 0 puan 💀</span>
+          </button>
+          <p class="hint">Patlamadan sonra bastın — bu round <b>0 puan</b>. Bir dahakine biraz daha erken bas! 😬</p>`;
+      } else {
+        center = `
+          <button class="rb-btn rb-used rb-safe" disabled>
+            <span class="rb-main">BASTIN</span>
+            <span class="rb-sub">${t} saniyede ✔</span>
+          </button>
+          <p class="hint">Patlamadan ÖNCE bastın — süren ne kadar geçse o kadar iyi. Round sonunda herkesin süresi açıklanacak. 😎</p>`;
+      }
+    } else if (view.exploded) {
+      // Patlama oldu, hâlâ basmadıysan artık puan yok (ama basıp "çok geç" görebilirsin).
+      center = `
+        <button id="rbBtn" class="rb-btn rb-live rb-toolate">
+          <span class="rb-main">GEÇ KALDIN</span>
+          <span class="rb-sub">artık 0 puan</span>
+        </button>
+        <p class="hint">Patladı! Basmadın — bu round <b>0 puan</b>. Bir sonraki sefere patlamadan hemen önce basmayı dene.</p>`;
+    } else {
+      center = `
+        <button id="rbBtn" class="rb-btn rb-live">
+          <span class="rb-main">BASMA…</span>
+          <span class="rb-sub">geç bas = çok puan (ama patlamadan ÖNCE!)</span>
+        </button>
+        <p class="hint">Gizli bir <b>patlama anı</b> var — ondan ÖNCE ne kadar geç basarsan o kadar çok puan. Ama patlamadan sonra basarsan (ya da hiç basmazsan) <b>0 puan</b>. Sinirini test et!</p>`;
+    }
+    return hud + `<div class="rb-arena">${center}</div>`;
+  },
+
+  // Zaman Vurucu — hedef süre + gizlenen sayaç. Sayacı rAF (client-lokal) sürer.
+  'time-target'(view, state) {
+    const target = view.targetSec.toFixed(2);
+    // Round sonu: herkesin süresi/farkı karşılaştırmalı.
+    if (view.phase === 'reveal') {
+      const rows = view.results
+        .map((r, i) => {
+          const time = r.pressed ? `${r.pressSec.toFixed(2)} sn` : 'basmadı';
+          const diff = r.pressed ? `${r.diffSec.toFixed(2)} fark` : '—';
+          const cls = i === 0 && r.pressed ? 'uc-accused' : ''; // en yakını vurgula
+          return `<li class="${cls}">
+            <span>${i + 1}. ${avatarHTML(state, playerCharId(state, r.playerId), 'avatar-xs')}${esc(r.nickname)}${r.pressed ? '' : ' <span class="off">(basmadı)</span>'}</span>
+            <span>${time} · ${diff} · <b>${r.points}</b></span>
+          </li>`;
+        })
+        .join('');
+      return `
+        <div class="tt-target">🎯 Hedef: <b>${target}</b> sn</div>
+        <h3>Sonuçlar — hedefe en yakın kazanır</h3>
+        <ul class="list">${rows}</ul>`;
+    }
+    // Oynanış
+    const you = view.you || {};
+    const hud = `<div class="rowbetween ar-hud"><span></span><span class="ar-score">${view.pressedCount}/${view.total} bastı</span></div>`;
+    const targetBox = `<div class="tt-target">🎯 Hedef: <b>${target}</b> sn</div>`;
+    let body;
+    if (you.pressed) {
+      body = `
+        <div class="tt-feedback">
+          <div class="tt-fb-time">${you.pressSec != null ? you.pressSec.toFixed(2) : '?'} sn'de bastın</div>
+          <div class="tt-fb-diff">hedef ${target} → <b>${you.diffSec != null ? you.diffSec.toFixed(2) : '?'} sn fark</b></div>
+          <div class="tt-fb-pts">${you.points != null ? you.points : 0} puan</div>
+        </div>
+        <p class="hint">Bir kez basılır. Round sonunda herkesin süresi karşılaştırılacak. 🎯</p>`;
+    } else {
+      body = `
+        <div id="ttCounter" class="tt-counter">0.00</div>
+        <div id="ttHidden" class="tt-hidden hidden">🙈 sayaç gizlendi — artık kendi hissine güven!</div>
+        <button id="ttBtn" class="primary wide tt-btn">BAS!</button>
+        <p class="hint">Sayaç ilk <b>3 saniye</b> görünür, sonra kaybolur. Hedef süreye (<b>${target}</b> sn) ulaştığını hissettiğin an <b>BAS</b>. Hedefe en yakın en çok puanı alır.</p>`;
+    }
+    return hud + targetBox + `<div class="tt-arena">${body}</div>`;
+  },
 };
+
+// ---- Kelime Casusu yardımcı çiziciler ----
+function ucRoleBig(view) {
+  if (!view.you || !view.you.participant) return `<div class="uc-role uc-spectator">İzleyici modu</div>`;
+  if (view.you.isSpy)
+    return `<div class="uc-role uc-spy">🕵️ SEN CASUSSUN<br><small>Kelimeyi bilmiyorsun. Diğerlerinin dediklerinden ipucu çıkar, yakalanmadan mantıklı bir kelime uydur.</small></div>`;
+  return `<div class="uc-role uc-civ">Gizli kelime<br><b>${esc(view.you.word || '')}</b><br><small>Casusu belli etmeden bu kelimeyle ilgili bir şey söyle.</small></div>`;
+}
+// Clue/voting sırasında üstte küçük rol hatırlatıcı.
+function ucRoleHint(view) {
+  if (!view.you || !view.you.participant) return `<div class="uc-mini uc-spectator-mini">İzleyici modu</div>`;
+  if (view.you.isSpy) return `<div class="uc-mini uc-spy-mini">🕵️ Sen casussun — kelimeyi bilmiyorsun</div>`;
+  return `<div class="uc-mini uc-civ-mini">Gizli kelime: <b>${esc(view.you.word || '')}</b></div>`;
+}
+function ucBoard(view, state) {
+  if (!view.clues || !view.clues.length) return `<p class="hint">Henüz kimse konuşmadı.</p>`;
+  const rows = view.clues
+    .map(
+      (c) => `<li>
+        <span>${avatarHTML(state, playerCharId(state, c.playerId), 'avatar-xs')}${esc(c.nickname)}</span>
+        <span class="uc-word">${esc(c.word)}${c.auto ? ' <small class="uc-auto">(süre doldu)</small>' : ''}</span>
+      </li>`
+    )
+    .join('');
+  return `<ul class="list uc-clues">${rows}</ul>`;
+}
+function ucPlayerList(view, state) {
+  const rows = view.players
+    .map(
+      (p) => `<li><span>${avatarHTML(state, playerCharId(state, p.id), 'avatar-xs')}${esc(p.nickname)}${p.left ? ' <span class="off">(koptu)</span>' : ''}</span></li>`
+    )
+    .join('');
+  return `<ul class="list">${rows}</ul>`;
+}
+// Kendi sıramdayken (in-place) sadece süre + uyarı metnini güncelle; input'a dokunma.
+function updateUndercoverTurn(state) {
+  const v = state.minigame.view;
+  const secs = Math.ceil((v.turnTimeLeftMs || 0) / 1000);
+  setText('#ucTimer', `⏱ ${secs}s`);
+  const n = document.getElementById('ucNotice');
+  if (n) n.textContent = v.you && v.you.notice ? v.you.notice : '';
+}
 
 function bindMinigame(id, view) {
   if (id === 'placeholder') {
@@ -362,6 +657,55 @@ function bindMinigame(id, view) {
     const me = view && view.players ? view.players[myId] : null;
     if (me) updateTypeRaceNext(me);
     paintTypeRaceWord('');
+  } else if (id === 'undercover') {
+    // Sadece KENDİ clue sıramda metin input'u mount edilir; oy tıklamaları #game
+    // pointerdown delegasyonuyla yakalanıyor (burada bağlama gerekmez).
+    if (view.phase === 'clue' && view.you && view.you.isYourTurn) {
+      undercoverMounted = true; // artık bu turda yerinde güncelleme yapılacak
+      const input = document.getElementById('ucInput');
+      const submit = () => {
+        const el = document.getElementById('ucInput');
+        if (!el) return;
+        const word = el.value.trim();
+        if (!word) return;
+        send('game:input', { type: 'clue', word });
+        // input'u BURADA temizlemiyoruz: kelime reddedilirse (gizli kelime vs.) yazdığı
+        // metin kalsın. Kabul edilince sıra geçer -> tam yeniden çizim yeni boş input verir.
+      };
+      if (input) {
+        input.focus();
+        input.onkeydown = (e) => {
+          if (e.key === 'Enter') { e.preventDefault(); submit(); }
+        };
+      }
+      const btn = document.getElementById('ucSubmit');
+      if (btn) btn.onclick = submit;
+    }
+  } else if (id === 'precision-bar') {
+    // Shell (bar + çizgi) mount edildi; bundan sonra yerinde güncelleme yapılır.
+    // Çizgiyi rAF döngüsü sürekli oynatır (currentState'ten okur).
+    pbMounted = true;
+    const me = view && view.players ? view.players[myId] : null;
+    pbShownAttempts = me ? me.attempts : 0;
+    capturePbSync(view);
+    startPrecisionAnim();
+  } else if (id === 'red-button') {
+    // Patlama anı geldiğinde (exploded false->true) senkron efekti BİR KEZ tetikle.
+    if (view.exploded) {
+      if (!rbExplodedShown) { rbExplodedShown = true; triggerRedButtonBoom(); }
+    } else {
+      rbExplodedShown = false; // yeni round / patlama öncesi: sıfırla
+    }
+  } else if (id === 'time-target') {
+    ttMounted = true;
+    ttStructKey = `${view.phase}|${view.you && view.you.pressed ? 1 : 0}`;
+    // Sayaç sadece oynanışta ve daha basmadıysan gerekli (ilk 3 sn görünür).
+    if (view.phase === 'playing' && view.you && !view.you.pressed) {
+      ttSync = { atPerf: performance.now() }; // sayaç mount anında 0'dan başlar (round başı ≈ şimdi)
+      startTimeTargetAnim();
+    } else {
+      stopTtRaf();
+    }
   }
 }
 // ======================================================================
@@ -375,6 +719,43 @@ function render(state) {
     return;
   }
   typeRaceMounted = false; // başka bir ekrana geçiyoruz (ya da type-race'e ilk kez giriyoruz)
+
+  // Kelime Casusu: KENDİ sıramdayken metin input'u her saniye (geri sayım) yeniden
+  // çizilirse focus/yazdıklarım kaybolur. Type Race'teki gibi, bu durumda tam yeniden
+  // çizim yerine sadece dinamik metinleri (süre, uyarı) yerinde güncelliyoruz.
+  const ucv =
+    state.phase === 'playing' && state.minigame && state.minigame.id === 'undercover'
+      ? state.minigame.view
+      : null;
+  if (ucv && undercoverMounted && ucv.phase === 'clue' && ucv.you && ucv.you.isYourTurn) {
+    updateUndercoverTurn(state);
+    return;
+  }
+  undercoverMounted = false;
+
+  // Hassas Duruş: bar/çizgi DOM'u her broadcast'te yeniden çizilirse animasyon
+  // sıçrar. Type Race gibi: mount edildiyse tam yeniden çizim yerine yerinde
+  // güncelleme yap (rAF döngüsü çizgiyi sürekli oynatır). Oyundan çıkınca rAF'ı durdur.
+  const pbActive = state.phase === 'playing' && state.minigame && state.minigame.id === 'precision-bar';
+  if (pbActive && pbMounted) {
+    updatePrecisionBar(state);
+    return;
+  }
+  if (!pbActive) stopPrecisionAnim();
+
+  // Zaman Vurucu: sayaç (rAF) shell'i her broadcast'te yeniden çizilmesin. Ekran
+  // yapısı (phase|pressed) aynı kaldığı sürece yerinde güncelle; değişince remount.
+  const ttv = state.phase === 'playing' && state.minigame && state.minigame.id === 'time-target'
+    ? state.minigame.view
+    : null;
+  const ttKey = ttv ? `${ttv.phase}|${ttv.you && ttv.you.pressed ? 1 : 0}` : null;
+  if (ttv && ttMounted && ttKey === ttStructKey) {
+    updateTimeTarget(state);
+    return;
+  }
+  if (!ttv) stopTimeTargetAnim();
+  ttMounted = false;
+
   const me = state.players.find((p) => p.id === myId);
   const amHost = !!(me && me.isHost);
   let html = '';
@@ -439,12 +820,32 @@ function renderLobby(state, amHost, me) {
     ? `<div class="charGrid">${cells}</div>`
     : `<p class="hint charhint">⚠ Karakter listesi sunucudan gelmedi. Sunucu büyük olasılıkla ESKİ sürümde çalışıyor — terminalde durdurup (Ctrl+C) <b>npm start</b> ile yeniden başlat.</p>`;
 
+  // Oyun havuzu: host hangi minigame'lerin round'larda düşeceğini seçer (en az 1 açık).
+  // Host olmayanlar sadece seçili olanları görür (tıklanamaz).
+  const enabled = new Set(state.enabledMinigames || []);
+  const mgCells = (state.minigames || [])
+    .map((m) => {
+      const on = enabled.has(m.id);
+      return `<button class="mgCell ${on ? 'on' : 'off'}" data-mg="${m.id}" ${amHost ? '' : 'disabled'} title="${esc(m.displayName)}">
+        <span class="mgCheck">${on ? '✔' : ''}</span>
+        <span class="mgName">${esc(m.displayName)}</span>
+      </button>`;
+    })
+    .join('');
+  const hasMgCatalog = Array.isArray(state.minigames) && state.minigames.length > 0;
+  const mgHtml = hasMgCatalog
+    ? `<div class="mgGrid">${mgCells}</div>
+       <p class="hint">${amHost ? `Seçili oyunlardan rastgele round düşer (${enabled.size}/${state.minigames.length} açık, en az 1 gerekli).` : 'Havuzu host seçer.'}</p>`
+    : '';
+
   const canReady = !!(me && me.characterId);
   const readyLabel = me && me.ready ? 'Hazır değilim' : 'Hazırım';
   return `
     <div class="rowbetween"><h2>Lobi</h2><span class="code">${state.code}</span></div>
     <p>Round sayısı: ${rounds} ${amHost ? '' : '<small style="color:var(--muted)">(sadece host seçer)</small>'}</p>
     <ul class="list">${players}</ul>
+    <h3>Oyun havuzu</h3>
+    ${mgHtml}
     <h3>Karakterini seç</h3>
     ${gridHtml}
     <button id="readyBtn" class="primary wide" ${canReady ? '' : 'disabled'}>${readyLabel}</button>
@@ -455,7 +856,9 @@ function renderLobby(state, amHost, me) {
 function renderPlaying(state) {
   const mg = state.minigame;
   const renderer = minigameRenderers[mg.id];
-  const inner = renderer ? renderer(mg.view) : `<p>Bilinmeyen minigame: ${esc(mg.id)}</p>`;
+  // renderer'a state'i de veriyoruz (Kelime Casusu oyuncu portrelerini state.characters +
+  // player.characterId'den çiziyor; diğer renderer'lar ikinci argümanı yok sayar).
+  const inner = renderer ? renderer(mg.view, state) : `<p>Bilinmeyen minigame: ${esc(mg.id)}</p>`;
   return `
     <div class="rowbetween"><h2>${esc(mg.displayName)}</h2><span class="code">Round ${state.currentRound}/${state.totalRounds}</span></div>
     ${inner}`;
@@ -511,10 +914,16 @@ function bind(state, amHost) {
         send('lobby:selectCharacter', { characterId: b.dataset.char });
       };
     });
-    if (amHost)
+    if (amHost) {
       document.querySelectorAll('.roundBtn').forEach((b) => {
         b.onclick = () => send('lobby:setRounds', { rounds: Number(b.dataset.rounds) });
       });
+      // Oyun havuzu: tıklayınca o oyunun açık/kapalı durumunu ters çevir.
+      document.querySelectorAll('.mgCell').forEach((b) => {
+        b.onclick = () =>
+          send('lobby:toggleMinigame', { id: b.dataset.mg, enabled: !b.classList.contains('on') });
+      });
+    }
   } else if (state.phase === 'playing') {
     bindMinigame(state.minigame.id, state.minigame.view);
   } else if (state.phase === 'roundResult') {
@@ -624,4 +1033,135 @@ function onTypeRaceInput() {
     return;
   }
   paintTypeRaceWord(val);
+}
+
+// ---------------- Hassas Duruş yardımcıları ----------------
+// Üçgen dalga (server'daki _posAt ile AYNI): 0->1->0 ping-pong.
+function trianglePos(speed, tSec) {
+  let ph = (speed * tSec) % 2;
+  if (ph < 0) ph += 2;
+  return ph <= 1 ? ph : 2 - ph;
+}
+// Server'ın elapsedMs'ini yerel performance.now() ile eşle (saat farkını atlatır).
+function capturePbSync(view) {
+  const me = view && view.players ? view.players[myId] : null;
+  if (!me) { pbSync = null; return; }
+  pbSync = { elapsedMs: me.phase === 'moving' ? me.elapsedMs || 0 : 0, atPerf: performance.now() };
+}
+function stopPrecisionAnim() {
+  if (pbRaf) { cancelAnimationFrame(pbRaf); pbRaf = null; }
+  pbMounted = false;
+  pbSync = null;
+  pbShownAttempts = -1;
+}
+// Çizgiyi her karede oynat: pozisyonu currentState + pbSync'ten hesapla (server'a
+// güvenmiyoruz; bu SADECE görsel — puanı server veriyor).
+function startPrecisionAnim() {
+  if (pbRaf) cancelAnimationFrame(pbRaf);
+  const frame = () => {
+    pbRaf = requestAnimationFrame(frame);
+    const s = currentState;
+    if (!s || !s.minigame || s.minigame.id !== 'precision-bar') return;
+    const me = s.minigame.view.players[myId];
+    const line = document.getElementById('pbLine');
+    if (!me || !line) return;
+    let pos;
+    if (me.phase === 'moving' && pbSync) {
+      const elapsed = pbSync.elapsedMs + (performance.now() - pbSync.atPerf);
+      pos = trianglePos(me.speed, elapsed / 1000);
+    } else {
+      pos = me.lastPos != null ? me.lastPos : me.linePos != null ? me.linePos : 0.5;
+    }
+    line.style.left = pos * 100 + '%';
+    line.classList.toggle('pb-line-stopped', me.phase === 'result');
+  };
+  pbRaf = requestAnimationFrame(frame);
+}
+// Broadcast geldikçe HUD'u yerinde güncelle; bar/çizgi DOM'una dokunma.
+function updatePrecisionBar(state) {
+  const view = state.minigame.view;
+  const me = view.players[myId];
+  setText('#pbTimer', `⏱ ${Math.ceil(view.timeLeftMs / 1000)}s`);
+  if (!me) return;
+  setText('#pbScore', me.score);
+  setText('#pbAttempts', me.attempts);
+  // Yeni bir deneme sonuçlandıysa "+puan" baloncuğunu göster.
+  if (me.attempts !== pbShownAttempts) {
+    pbShownAttempts = me.attempts;
+    if (me.phase === 'result' && me.lastPos != null) showPbFloat(me);
+  }
+  capturePbSync(view); // animasyon senkronunu tazele (saniyede bir baz noktası)
+}
+function showPbFloat(me) {
+  const float = document.getElementById('pbFloat');
+  if (!float) return;
+  const suffix = me.lastPoints >= 10 ? '! 🎯' : me.lastPoints >= 5 ? '!' : '';
+  float.textContent = (me.lastPoints > 0 ? '+' : '') + me.lastPoints + suffix;
+  float.style.left = me.lastPos * 100 + '%';
+  float.className = 'pb-float pb-float-t' + me.lastTier;
+  void float.offsetWidth; // reflow: animasyonu baştan tetikle
+  float.classList.add('show');
+}
+
+// ---------------- Kırmızı Buton yardımcısı ----------------
+// Ekran geneli senkron patlama efekti. #game her broadcast'te yeniden çizildiği
+// için overlay/shake'i BODY üzerinde yapıyoruz (redraw'dan etkilenmesin), animasyon
+// bitince temizliyoruz.
+function triggerRedButtonBoom() {
+  document.body.classList.remove('rb-shake');
+  void document.body.offsetWidth; // reflow: shake'i baştan tetikle
+  document.body.classList.add('rb-shake');
+  const boom = document.createElement('div');
+  boom.className = 'rb-boom';
+  boom.innerHTML = '<span>💥 BOM! 💥</span>';
+  document.body.appendChild(boom);
+  setTimeout(() => {
+    boom.remove();
+    document.body.classList.remove('rb-shake');
+  }, 1150);
+}
+
+// ---------------- Zaman Vurucu yardımcıları ----------------
+function stopTtRaf() {
+  if (ttRaf) { cancelAnimationFrame(ttRaf); ttRaf = null; }
+}
+function stopTimeTargetAnim() {
+  stopTtRaf();
+  ttMounted = false;
+  ttStructKey = '';
+  ttSync = null;
+}
+// İlk 3 sn sayaç (client-lokal); 3 sn dolunca sayaç gizlenir, "hissine güven" mesajı çıkar.
+// Not: geçen süre server'dan GELMEZ (sızmasın); mount anı round başı sayılır.
+function startTimeTargetAnim() {
+  stopTtRaf();
+  const frame = () => {
+    ttRaf = requestAnimationFrame(frame);
+    const s = currentState;
+    if (!s || !s.minigame || s.minigame.id !== 'time-target') return;
+    const view = s.minigame.view;
+    if (view.phase !== 'playing' || (view.you && view.you.pressed) || !ttSync) return;
+    const counter = document.getElementById('ttCounter');
+    const hidden = document.getElementById('ttHidden');
+    if (!counter || !hidden) return;
+    const elapsed = performance.now() - ttSync.atPerf;
+    if (elapsed < view.visibleMs) {
+      counter.classList.remove('hidden');
+      hidden.classList.add('hidden');
+      counter.textContent = (elapsed / 1000).toFixed(2);
+    } else {
+      counter.classList.add('hidden');
+      hidden.classList.remove('hidden');
+    }
+  };
+  ttRaf = requestAnimationFrame(frame);
+}
+// Yapı değişmeden gelen broadcast'lerde (ör. başkası bastı) sadece "X/Y bastı"yı tazele.
+function updateTimeTarget(state) {
+  const view = state.minigame.view;
+  const el = document.querySelector('.tt-arena');
+  if (el) {
+    const score = document.querySelector('.ar-hud .ar-score');
+    if (score) score.textContent = `${view.pressedCount}/${view.total} bastı`;
+  }
 }

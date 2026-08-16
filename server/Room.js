@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
 import { awardPoints } from './scoring.js';
-import { pickRandom } from './minigames/index.js';
+import { pickRandom, list as listMinigames } from './minigames/index.js';
 import { CHARACTERS, isValidCharacter } from './characters.js';
 
 // Solo test kolay olsun diye 1; gerçek oyunda 2+ önerilir.
@@ -17,6 +17,8 @@ export default class Room {
     this.onEmpty = onEmpty; // oda tamamen boşalınca RoomManager'a haber ver
     this.phase = 'lobby';
     this.totalRounds = 3;
+    // Havuzda hangi minigame'ler aktif (host lobide seçer). Varsayılan: hepsi açık.
+    this.enabledMinigames = new Set(listMinigames().map((m) => m.id));
     this.currentRound = 0;
     this.hostId = null;
     this.players = new Map(); // playerId -> player
@@ -147,6 +149,21 @@ export default class Room {
     this.broadcast();
   }
 
+  // Host lobide bir minigame'i havuza açar/kapatır. En az 1 oyun açık kalmalı
+  // (hepsini kapatmaya izin yok — round seçecek oyun kalmaz).
+  setMinigameEnabled(playerId, id, enabled) {
+    if (playerId !== this.hostId || this.phase !== 'lobby') return;
+    const known = listMinigames().some((m) => m.id === id);
+    if (!known) return;
+    if (enabled) {
+      this.enabledMinigames.add(id);
+    } else {
+      if (this.enabledMinigames.size <= 1 && this.enabledMinigames.has(id)) return; // son oyunu kapatma
+      this.enabledMinigames.delete(id);
+    }
+    this.broadcast();
+  }
+
   setReady(playerId, ready) {
     if (this.phase !== 'lobby') return;
     const p = this.players.get(playerId);
@@ -217,7 +234,7 @@ export default class Room {
 
   startRound() {
     this.currentRound++;
-    const cls = pickRandom(this.lastMinigameId);
+    const cls = pickRandom(this.lastMinigameId, this.enabledMinigames);
     this.lastMinigameId = cls.id;
     for (const p of this.players.values()) p.roundReady = false;
 
@@ -323,6 +340,8 @@ export default class Room {
       currentRound: this.currentRound,
       hostId: this.hostId,
       characters: CHARACTERS, // seçilebilir karakter kataloğu (id, name, file)
+      minigames: listMinigames(), // tüm minigame kataloğu (id, displayName)
+      enabledMinigames: [...this.enabledMinigames], // havuzda aktif olanlar (host seçer)
       players: this.orderedPlayers().map((p) => ({
         id: p.id,
         nickname: p.nickname,
@@ -349,6 +368,22 @@ export default class Room {
   }
 
   broadcast() {
+    const mg = this.currentMinigame;
+    // Bazı minigame'ler (ör. Kelime Casusu) her oyuncuya FARKLI görüntü gösterir
+    // (gizli rol/kelime sızmasın). Böyle bir minigame getViewFor(playerId) sunarsa
+    // state'i her bağlı sokete ayrı ayrı, kendi view'ıyla yayınlarız. Aksi halde
+    // (diğer 5 oyun) tek ortak broadcast — davranış değişmez.
+    if (this.phase === 'playing' && mg && typeof mg.getViewFor === 'function') {
+      const base = this.serialize();
+      for (const p of this.players.values()) {
+        if (!p.connected || !p.socketId) continue;
+        const state = base.minigame
+          ? { ...base, minigame: { ...base.minigame, view: mg.getViewFor(p.id) } }
+          : base;
+        this.io.to(p.socketId).emit('room:state', state);
+      }
+      return;
+    }
     this.io.to(this.code).emit('room:state', this.serialize());
   }
 }

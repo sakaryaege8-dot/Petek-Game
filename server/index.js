@@ -58,6 +58,9 @@ io.on('connection', (socket) => {
   socket.on('lobby:setRounds', ({ rounds } = {}) =>
     withRoom((room, pid) => room.setRounds(pid, Number(rounds)))
   );
+  socket.on('lobby:toggleMinigame', ({ id, enabled } = {}) =>
+    withRoom((room, pid) => room.setMinigameEnabled(pid, id, !!enabled))
+  );
   socket.on('lobby:selectCharacter', ({ characterId } = {}) =>
     withRoom((room, pid) => room.selectCharacter(pid, characterId ?? null))
   );
